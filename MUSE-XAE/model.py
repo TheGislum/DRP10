@@ -2,6 +2,7 @@ import keras.losses
 import keras.metrics
 import tensorflow as tf
 import keras
+import numpy as np
 from keras import regularizers
 from keras.constraints import NonNeg
 from keras.regularizers import OrthogonalRegularizer, L2
@@ -38,7 +39,7 @@ class Sampling(keras.layers.Layer):
         batch = tf.shape(z_mean)[0]
         dim = tf.shape(z_mean)[1]
         epsilon = tf.random.normal(shape=(batch, dim))
-        return z_mean + z_log_var * epsilon
+        return tf.abs(z_mean + tf.exp(0.5 * z_log_var) * epsilon)
 
 
 class MUSE_XVAE(keras.Model):
@@ -47,7 +48,7 @@ class MUSE_XVAE(keras.Model):
         input_dim=96,
         l_1=128,
         z=17,
-        beta_v=0.05,
+        beta_v=1e-5,
         beta_r=0.001,
         activation="softplus",
         reg="min_vol",
@@ -89,10 +90,9 @@ class MUSE_XVAE(keras.Model):
         latent_1 = layers.Dense(l_1 / 4, activation=activation)(latent_1)
         latent_1 = layers.LayerNormalization()(latent_1)
 
-        z_mean = layers.Dense(z, activation="softplus", name="z_mean")(latent_1)
-        z_log_var = layers.Dense(z, activation="softplus", name="z_log_var")(latent_1)
-        signatures = Sampling()([z_mean, z_log_var])
-        signatures = layers.ReLU(name="encoder_layer")(signatures)
+        z_mean = layers.Dense(z, name="z_mean")(latent_1)
+        z_log_var = layers.Dense(z, name="z_log_var")(latent_1)
+        signatures = Sampling(name="encoder_layer")([z_mean, z_log_var])
 
         return keras.Model(
             encoder_input, [z_mean, z_log_var, signatures], name="encoder"
@@ -122,9 +122,9 @@ class MUSE_XVAE(keras.Model):
         z_mean, z_log_var, z = self.encoder(data[0])
         reconstruction = self.decoder(z)
         reconstruction_loss = tf.reduce_mean(
-            tf.reduce_sum(keras.losses.MSE(data[0], reconstruction))
+            keras.losses.poisson(data[0], reconstruction)
         )
-        kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
+        kl_loss = -0.5 * (1 + z_log_var - tf.exp(z_log_var))
         kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
         total_loss = reconstruction_loss + self.beta_v * kl_loss
         return {
@@ -138,9 +138,9 @@ class MUSE_XVAE(keras.Model):
             z_mean, z_log_var, z = self.encoder(data[0])
             reconstruction = self.decoder(z)
             reconstruction_loss = tf.reduce_mean(
-                tf.reduce_sum(keras.losses.MSE(data[0], reconstruction))
+                keras.losses.poisson(data[0], reconstruction)
             )
-            kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
+            kl_loss = -0.5 * (1 + z_log_var - tf.exp(z_log_var))
             kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
             total_loss = reconstruction_loss + self.beta_v * kl_loss
         grads = tape.gradient(total_loss, self.trainable_weights)
@@ -153,6 +153,14 @@ class MUSE_XVAE(keras.Model):
             "reconstruction_loss": self.reconstruction_loss_tracker.result(),
             "kl_loss": self.kl_loss_tracker.result(),
         }
+
+    def get_f_mean(self, data):
+        mu, std, _ = self.encoder.predict(data)
+        std = tf.exp(0.5 * std)
+        f_mean = std * tf.sqrt(2 / np.pi) * tf.exp(
+            -0.5 * (mu**2 / std**2)
+        ) + mu * tf.math.erf(mu / (std * np.sqrt(2)))
+        return f_mean
 
 
 def MUSE_XAE(

@@ -7,15 +7,15 @@
 
 import os
 
-augs = [50]
+augs = [20]
 senario_max_min = [
-    # (1, 13, 8),
-    # (2, 13, 8),
-    # (3, 13, 8),
-    # (4, 5, 2),
+    (1, 13, 8),
+    (2, 13, 8),
+    (3, 13, 8),
+    (4, 5, 2),
     (5, 23, 18),
 ]
-runs = 5
+runs = 1
 
 for i in augs:
     for senario, max_sig, min_sig in senario_max_min:

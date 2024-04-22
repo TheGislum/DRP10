@@ -181,6 +181,8 @@ if __name__ == "__main__":
         "mean_cosine": mean_cosine,
     }
 
+    print(metrics)
+
     # Best solution
     df = pd.DataFrame.from_dict(metrics, orient="index").T.reset_index()
     df.columns = ["signatures", "mean_errors", "min_cosine", "mean_cosine"]
@@ -194,14 +196,13 @@ if __name__ == "__main__":
             .iloc[0, :]
         )
     except:
-        best = df.sort_values(by="signatures").iloc[0, :]
+        best = df.sort_values(by="mean_errors").iloc[0, :]
 
     # Plot best solution
     plot_optimal_solution(
         save_to=Plot_dir,
         df_study=df,
-        min_stability=min_stability,
-        mean_stability=mean_stability,
+        best=best,
     )
 
     # Refit

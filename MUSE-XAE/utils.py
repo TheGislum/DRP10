@@ -36,6 +36,9 @@ os.environ["model_type"] = "vae"
 # tf.compat.v1.disable_eager_execution()
 
 
+from sklearn.decomposition import PCA
+
+
 class KMeans_with_matching:
     def __init__(self, X, n_clusters, max_iter, random=False):
 
@@ -319,19 +322,7 @@ def normalize(X):
     return np.array(norm_data, dtype="float64")
 
 
-def plot_optimal_solution(save_to, df_study, min_stability, mean_stability):
-
-    try:
-        best = (
-            df_study[
-                (df_study["mean_cosine"] >= mean_stability)
-                & (df_study["min_cosine"] >= min_stability)
-            ]
-            .sort_values(by="mean_errors")
-            .iloc[0, :]
-        )
-    except:
-        best = df_study.sort_values(by="signatures").iloc[0, :]
+def plot_optimal_solution(save_to, df_study, best):
 
     df_study_sort = df_study.sort_values(by="signatures")
 
@@ -416,22 +407,19 @@ def train_model(
     )
     model.load_weights(f"{save_to}best_model_{signatures}_{iter}.h5")
     if os.environ["model_type"] == "vae":
-        encoder_new = Model(
-            inputs=model.encoder.input,
-            outputs=model.encoder.get_layer("encoder_layer").output,
-        )
-
-        S = model.decoder.layers[-1].get_weights()[0]
+        S = np.array(model.decoder.layers[-1].get_weights()[0])
+        E = np.array(model.get_f_mean(X_scaled))
     else:
         encoder_new = Model(
             inputs=model.input,
             outputs=model.get_layer("encoder_layer").output,
         )
 
-        S = model.layers[-1].get_weights()[0]
-    E = encoder_new.predict(X_scaled)
+        S = np.array(model.layers[-1].get_weights()[0])
+        E = np.array(encoder_new.predict(X_scaled))
 
-    error = np.linalg.norm(np.array(X_scaled) - np.array(E.dot(S)))
+    # error = np.linalg.norm(np.array(X_scaled) - E.dot(S))
+    error = tf.keras.losses.poisson(np.array(X_scaled), E.dot(S)).numpy().mean()
 
     return error, S.T
 
@@ -517,6 +505,26 @@ def calc_cosine_similarity(args):
         min_sil = np.min(means_lst)
         mean_sil = np.mean(means_lst)
 
+        # Plot_dir = f"Plots/"
+        # os.makedirs(Plot_dir, exist_ok=True)
+
+        # fig, ax = plt.subplots(figsize=(4, 4))
+        # PCA_model = PCA(n_components=2)
+        # PCA_model.fit(all_extraction_df)
+        # X_PCA = PCA_model.transform(all_extraction_df)
+        # cluster = np.unique(cluster_labels)
+        # for i in cluster:
+        #     ax.scatter(
+        #         X_PCA[cluster_labels == i, 0],
+        #         X_PCA[cluster_labels == i, 1],
+        #         label=i,
+        #         s=10,
+        #     )
+        # ax.set_title(f"Silhouette analysis for {sig} signatures")
+        # ax.set_xlabel("PCA1")
+        # ax.set_ylabel("PCA2")
+        # plt.savefig(f"{Plot_dir}Silhouette_{sig}.pdf")
+
     return sig, min_sil, mean_sil, consensus_sig, means_lst
 
 
@@ -598,26 +606,12 @@ def refit(data, S, best, save_to="./"):
     # model.summary()
     model.load_weights(f"{save_to}best_model_refit.h5")
     if os.environ["model_type"] == "vae":
-        encoder_mean = Model(
-            inputs=model.encoder.input,
-            outputs=model.encoder.get_layer("z_mean").output,
-        )
-        encoder_var = Model(
-            inputs=model.encoder.input,
-            outputs=model.encoder.get_layer("z_log_var").output,
-        )
+        E = pd.DataFrame(model.get_f_mean(X))
     else:
         encoder_new = Model(
             inputs=model.input,
             outputs=model.get_layer("encoder_layer").output,
         )
-
-    if os.environ["model_type"] == "vae":
-        E = pd.DataFrame(encoder_mean.predict(X))
-        # V = pd.DataFrame(encoder_var.predict(X))
-        # E.to_csv(f"{save_to}../Suggested_SBS_De_Novo/MUSE_mean.csv")
-        # V.to_csv(f"{save_to}../Suggested_SBS_De_Novo/MUSE_log_var.csv")
-    else:
         E = pd.DataFrame(encoder_new.predict(X))
 
     E = E.T.apply(lambda x: x / (sum(x) + 1e-10)) * np.array(original_data.sum(axis=1))
