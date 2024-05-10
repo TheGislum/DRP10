@@ -20,7 +20,7 @@ from keras.models import load_model
 from scipy.optimize import linear_sum_assignment
 from PyPDF2 import PdfMerger
 
-from model import MUSE_XAE, MUSE_XVAE, Sampling, minimum_volume
+from model import MUSE_XAE, MUSE_XVAE
 
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 tf.config.threading.set_intra_op_parallelism_threads(1)
@@ -29,6 +29,7 @@ tf.config.threading.set_inter_op_parallelism_threads(1)
 # config = tf.compat.v1.ConfigProto()
 # config.gpu_options.per_process_gpu_memory_fraction = 0.1
 
+# tf.keras.utils.set_random_seed(42)
 
 os.environ["model_type"] = "vae"
 
@@ -48,7 +49,7 @@ class KMeans_with_matching:
         self.n = X.shape[0]
 
         if self.n_clusters > 1:
-            model = KMeans(n_clusters=n_clusters, init="random").fit(self.X)
+            model = KMeans(n_clusters=n_clusters, init="random", n_init=10).fit(self.X)
             self.C = np.asarray(model.cluster_centers_)
         else:
             self.C = self.X[np.random.choice(self.n, size=1), :]
@@ -368,7 +369,7 @@ def train_model(
     )
 
     if os.environ["model_type"] == "vae":
-        model = MUSE_XVAE(input_dim=96, z=signatures, activation=activation)
+        model = MUSE_XVAE(input_dim=96, z=signatures, beta_v=0)
         model.compile(optimizer=tf.keras.optimizers.legacy.Adam())
         early_stopping = EarlyStopping(
             monitor="val_loss", patience=30, start_from_epoch=1
@@ -408,7 +409,9 @@ def train_model(
     model.load_weights(f"{save_to}best_model_{signatures}_{iter}.h5")
     if os.environ["model_type"] == "vae":
         S = np.array(model.decoder.layers[-1].get_weights()[0])
-        E = np.array(model.get_f_mean(X_scaled))
+        E, _, _, _ = model.get_f_mean(X_scaled)
+        E = np.array(E)
+        error = tf.keras.losses.poisson(np.array(X_scaled), E.dot(S)).numpy().mean()
     else:
         encoder_new = Model(
             inputs=model.input,
@@ -418,8 +421,7 @@ def train_model(
         S = np.array(model.layers[-1].get_weights()[0])
         E = np.array(encoder_new.predict(X_scaled))
 
-    # error = np.linalg.norm(np.array(X_scaled) - E.dot(S))
-    error = tf.keras.losses.poisson(np.array(X_scaled), E.dot(S)).numpy().mean()
+        error = np.linalg.norm(np.array(X_scaled) - E.dot(S))
 
     return error, S.T
 
@@ -505,25 +507,25 @@ def calc_cosine_similarity(args):
         min_sil = np.min(means_lst)
         mean_sil = np.mean(means_lst)
 
-        # Plot_dir = f"Plots/"
-        # os.makedirs(Plot_dir, exist_ok=True)
+        Plot_dir = f"Plots/"
+        os.makedirs(Plot_dir, exist_ok=True)
 
-        # fig, ax = plt.subplots(figsize=(4, 4))
-        # PCA_model = PCA(n_components=2)
-        # PCA_model.fit(all_extraction_df)
-        # X_PCA = PCA_model.transform(all_extraction_df)
-        # cluster = np.unique(cluster_labels)
-        # for i in cluster:
-        #     ax.scatter(
-        #         X_PCA[cluster_labels == i, 0],
-        #         X_PCA[cluster_labels == i, 1],
-        #         label=i,
-        #         s=10,
-        #     )
-        # ax.set_title(f"Silhouette analysis for {sig} signatures")
-        # ax.set_xlabel("PCA1")
-        # ax.set_ylabel("PCA2")
-        # plt.savefig(f"{Plot_dir}Silhouette_{sig}.pdf")
+        fig, ax = plt.subplots(figsize=(4, 4))
+        PCA_model = PCA(n_components=2)
+        PCA_model.fit(all_extraction_df)
+        X_PCA = PCA_model.transform(all_extraction_df)
+        cluster = np.unique(cluster_labels)
+        for i in cluster:
+            ax.scatter(
+                X_PCA[cluster_labels == i, 0],
+                X_PCA[cluster_labels == i, 1],
+                label=i,
+                s=10,
+            )
+        ax.set_title(f"Silhouette analysis for {sig} signatures")
+        ax.set_xlabel("PCA1")
+        ax.set_ylabel("PCA2")
+        plt.savefig(f"{Plot_dir}Silhouette_{sig}.pdf")
 
     return sig, min_sil, mean_sil, consensus_sig, means_lst
 
@@ -568,7 +570,9 @@ def refit(data, S, best, save_to="./"):
     X = normalize(data)
 
     if os.environ["model_type"] == "vae":
-        model = MUSE_XVAE(input_dim=96, z=int(best["signatures"]), refit=True)
+        model = MUSE_XVAE(
+            input_dim=96, z=int(best["signatures"]), beta_v=1e-20, dist="g"
+        )
         S = S.apply(lambda x: x / sum(x))
         model.decoder.layers[-1].set_weights([np.array(S.T)])
         model.decoder.layers[-1].trainable = False
@@ -604,9 +608,18 @@ def refit(data, S, best, save_to="./"):
         callbacks=[early_stopping, checkpoint],
     )
     # model.summary()
+    P = None
     model.load_weights(f"{save_to}best_model_refit.h5")
     if os.environ["model_type"] == "vae":
-        E = pd.DataFrame(model.get_f_mean(X))
+        E, Z, mu, log_var = model.get_f_mean(X)
+        E = pd.DataFrame(E)
+        Es = (
+            (E.T.apply(lambda x: x / (sum(x) + 1e-10)) * np.sum(original_data, axis=1))
+            / E.T
+        ).T.to_numpy()
+        P = np.percentile(Z, [0, 95], axis=1)
+        P = np.array(P * np.stack([Es, Es]), dtype=np.integer)
+        P = (P, mu, log_var, E)
     else:
         encoder_new = Model(
             inputs=model.input,
@@ -617,10 +630,10 @@ def refit(data, S, best, save_to="./"):
     E = E.T.apply(lambda x: x / (sum(x) + 1e-10)) * np.array(original_data.sum(axis=1))
     E = E.T.round()
 
-    return E
+    return E, P
 
 
-def plot_results(data, S, E, sig_index, tumour_types, save_to, cosmic_version):
+def plot_results(data, S, E, P, sig_index, tumour_types, save_to, cosmic_version):
 
     X = np.array(data)
     S = pd.DataFrame(S)
@@ -669,6 +682,20 @@ def plot_results(data, S, E, sig_index, tumour_types, save_to, cosmic_version):
     Plot_dir = f"{save_to}Plots/"
 
     plot_signature(reoreder_sig, save_to=Plot_dir)
+
+    if P is not None:
+        P, mu, log_var, E = P
+        P1 = pd.DataFrame(P[0, :, :], columns=COSMIC.columns)
+        P2 = pd.DataFrame(P[1, :, :], columns=COSMIC.columns)
+        P1.to_csv(f"{Extraction_dir}MUSE_EXP_CI_low.csv")
+        P2.to_csv(f"{Extraction_dir}MUSE_EXP_CI_high.csv")
+        pd.DataFrame(mu, columns=COSMIC.columns).to_csv(
+            f"{Extraction_dir}MUSE_EXP_mu.csv"
+        )
+        pd.DataFrame(log_var, columns=COSMIC.columns).to_csv(
+            f"{Extraction_dir}MUSE_EXP_log_var.csv"
+        )
+        E.to_csv(f"{Extraction_dir}MUSE_EXP-nn.csv")
 
     print(" ")
     print("Thank you for using MUSE-XAE! Check the results on the Experiments folder")

@@ -207,7 +207,7 @@ if __name__ == "__main__":
 
     # Refit
     S = pd.DataFrame(m_signatures[best["signatures"]])
-    E = refit(X, S=S, best=best, save_to=Models_dir)
+    E, P = refit(X, S=S, best=best, save_to=Models_dir)
 
     # Plot extracted signatures
     try:
@@ -223,6 +223,7 @@ if __name__ == "__main__":
         X,
         S=S,
         E=E,
+        P=P,
         sig_index=index_signatures,
         tumour_types=tumour_types,
         save_to=Main_dir + "/",
