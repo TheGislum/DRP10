@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import sklearn
 import os
+import json
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "1"
@@ -38,6 +39,7 @@ os.environ["model_type"] = "vae"
 
 
 from sklearn.decomposition import PCA
+import sigProfilerPlotting as sigPlt
 
 
 class KMeans_with_matching:
@@ -313,6 +315,25 @@ def plot_signature(signatures, name="DeNovo_Signatures", save_to="./"):
         os.remove(file)
 
 
+def plot_signature_sigPlt(
+    sigMatrix: np.ndarray, project: str = "DeNovo_Signatures", outputPath: str = "./"
+):
+    tmp = outputPath + "/temp.tsv"
+    pd.DataFrame(sigMatrix).to_csv(tmp, sep="\t")
+
+    sigPlt.plotSBS(
+        outputPath + "/temp.tsv",
+        output_path=outputPath + "/",
+        project=project,
+        plot_type="96",
+        percentage=True,
+        savefig_format="pdf",
+    )
+
+    if tmp is not None:
+        os.remove(tmp)
+
+
 def normalize(X):
 
     total_mutations = X.sum(axis=1)
@@ -359,7 +380,16 @@ def plot_optimal_solution(save_to, df_study, best):
 
 
 def train_model(
-    data, signatures, iter, batch_size, epochs, loss, augmentation, activation, save_to
+    data,
+    signatures,
+    iter,
+    batch_size,
+    epochs,
+    loss,
+    augmentation,
+    activation,
+    save_to,
+    beta,
 ):
 
     X_scaled = normalize(data)
@@ -369,7 +399,7 @@ def train_model(
     )
 
     if os.environ["model_type"] == "vae":
-        model = MUSE_XVAE(input_dim=96, z=signatures, beta_v=0)
+        model = MUSE_XVAE(input_dim=96, z=signatures, beta_v=beta)
         model.compile(optimizer=tf.keras.optimizers.legacy.Adam())
         early_stopping = EarlyStopping(
             monitor="val_loss", patience=30, start_from_epoch=1
@@ -438,6 +468,7 @@ def optimal_model(
     activation,
     n_jobs,
     save_to="./",
+    beta=0,
 ):
 
     # parallelize model training
@@ -458,6 +489,7 @@ def optimal_model(
                         augmentation,
                         activation,
                         save_to,
+                        beta,
                     ),
                 )
 
@@ -557,7 +589,7 @@ def extract_latents(model: tf.keras.Model, mean: pd.DataFrame, log_var: pd.DataF
     log_var = pd.concat([log_var, log_var_temp], axis=1)
 
 
-def refit(data, S, best, save_to="./"):
+def refit(data, S, best, save_to="./", beta=0):
     print(" ")
     print("--------------------------------------------------")
     print(" ")
@@ -570,9 +602,7 @@ def refit(data, S, best, save_to="./"):
     X = normalize(data)
 
     if os.environ["model_type"] == "vae":
-        model = MUSE_XVAE(
-            input_dim=96, z=int(best["signatures"]), beta_v=1e-20, dist="g"
-        )
+        model = MUSE_XVAE(input_dim=96, z=int(best["signatures"]), beta_v=beta)
         S = S.apply(lambda x: x / sum(x))
         model.decoder.layers[-1].set_weights([np.array(S.T)])
         model.decoder.layers[-1].trainable = False
@@ -607,7 +637,6 @@ def refit(data, S, best, save_to="./"):
         validation_data=(X, X),
         callbacks=[early_stopping, checkpoint],
     )
-    # model.summary()
     P = None
     model.load_weights(f"{save_to}best_model_refit.h5")
     if os.environ["model_type"] == "vae":
@@ -680,8 +709,10 @@ def plot_results(data, S, E, P, sig_index, tumour_types, save_to, cosmic_version
     cosmic_match.to_csv(f"{Extraction_dir}COSMIC_match.csv")
 
     Plot_dir = f"{save_to}Plots/"
+    os.makedirs(Plot_dir, exist_ok=True)
 
     plot_signature(reoreder_sig, save_to=Plot_dir)
+    plot_signature_sigPlt(reoreder_sig, outputPath=Plot_dir)
 
     if P is not None:
         P, mu, log_var, E = P
@@ -700,3 +731,77 @@ def plot_results(data, S, E, P, sig_index, tumour_types, save_to, cosmic_version
     print(" ")
     print("Thank you for using MUSE-XAE! Check the results on the Experiments folder")
     print(" ")
+
+
+def test_exp(
+    save_to,
+    dataset,
+    metrics={},
+):
+    try:
+        trouth = pd.read_csv(
+            f"Ground_truths/{dataset.lower()}/ground.truth.syn.exposures.csv",
+            index_col=0,
+        ).T
+    except:
+        print(f"No ground truth found for {dataset}")
+        return
+
+    Extraction_dir = f"{save_to}Suggested_SBS_De_Novo/"
+    CI_high = pd.read_csv(
+        f"{Extraction_dir}/MUSE_EXP_CI_high.csv",
+        index_col=0,
+    )
+    CI_low = pd.read_csv(
+        f"{Extraction_dir}/MUSE_EXP_CI_low.csv",
+        index_col=0,
+    )
+
+    pred = pd.read_csv(
+        f"{Extraction_dir}/MUSE_EXP.csv",
+        index_col=0,
+    )
+
+    sig_match = pd.read_csv(f"{Extraction_dir}/COSMIC_match.csv", index_col=0)
+    sig_map = {}
+    for i in sig_match.index:
+        sig_map[sig_match.loc[i, "MUSE-SBS"]] = sig_match.loc[i, "COSMIC-SBS"]
+
+    pred.columns = [sig_map[i] for i in pred.columns]
+
+    # allign so that columns are same (not all ar in both)
+    in_both = trouth.columns.intersection(pred.columns)
+    trouth = trouth[in_both].to_numpy()
+    pred = pred[in_both].to_numpy()
+    CI_high = CI_high[in_both].to_numpy()
+    CI_low = CI_low[in_both].to_numpy()
+
+    mse = np.mean((trouth - pred) ** 2)
+    posson = np.mean(tf.keras.losses.poisson(np.array(trouth), np.array(pred)).numpy())
+
+    # % of trouth lower than CI_high and higher than CI_low
+    all = np.mean((((trouth >= CI_low) * 1) == ((trouth <= CI_high) * 1)) * 1)
+    low = np.mean((trouth >= CI_low) * 1)
+    high = np.mean((trouth <= CI_high) * 1)
+
+    exp_results = {
+        "mse": mse,
+        "posson": posson,
+        "all": all,
+        "low": low,
+        "high": high,
+    }
+
+    pd.DataFrame(exp_results, index=[0]).T.to_csv(
+        f"{Extraction_dir}MUSE_EXP_results.csv"
+    )
+
+    # convertt inner values from np.foat to float
+    for key, value in metrics.items():
+        for k, v in value.items():
+            metrics[key][k] = float(v)
+
+    exp_results.update(metrics)
+
+    with open(f"{Extraction_dir}MUSE_EXP_results.txt", "w") as f:
+        json.dump(exp_results, f, indent=4)

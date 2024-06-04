@@ -13,6 +13,7 @@ from utils import (
     optimal_cosine_similarity,
     refit,
     plot_results,
+    test_exp,
 )
 import warnings
 
@@ -94,6 +95,13 @@ if __name__ == "__main__":
         required=False,
         default=24,
     )
+    parser.add_argument(
+        "--beta_v",
+        type=float,
+        help="Beta value for KL divergence",
+        required=False,
+        default=0,
+    )
 
     args = parser.parse_args()
     data, iter, max_sig, min_sig = args.dataset, args.iter, args.max_sig, args.min_sig
@@ -109,6 +117,7 @@ if __name__ == "__main__":
         args.n_jobs,
         args.cosmic_version,
     )
+    beta_v = args.beta_v
 
     print(" ")
     print("--------------------------------------------------")
@@ -153,6 +162,7 @@ if __name__ == "__main__":
         activation=activation,
         n_jobs=n_jobs,
         save_to=Models_dir,
+        beta=beta_v,
     )
 
     min_cosine, mean_cosine, m_signatures, silhouettes = optimal_cosine_similarity(
@@ -207,7 +217,7 @@ if __name__ == "__main__":
 
     # Refit
     S = pd.DataFrame(m_signatures[best["signatures"]])
-    E, P = refit(X, S=S, best=best, save_to=Models_dir)
+    E, P = refit(X, S=S, best=best, save_to=Models_dir, beta=beta_v)
 
     # Plot extracted signatures
     try:
@@ -229,3 +239,6 @@ if __name__ == "__main__":
         save_to=Main_dir + "/",
         cosmic_version=cosmic_version,
     )
+
+    # Test
+    test_exp(save_to=Main_dir + "/", dataset=data, metrics=metrics)

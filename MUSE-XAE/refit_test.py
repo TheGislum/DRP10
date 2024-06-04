@@ -11,6 +11,7 @@ from utils import (
     optimal_cosine_similarity,
     refit,
     plot_results,
+    test_exp,
 )
 import warnings
 
@@ -20,38 +21,61 @@ tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 if __name__ == "__main__":
 
-    X = load_dataset(name="Scenario_1", cosmic_version="3.4")
-    # Refit
-    S = pd.read_csv(
-        "/home/gislum/python/muse-xae/DRP10/Ground_truths/scenario_1/ground.truth.syn.sigs.csv",
-        index_col=0,
-    )
-    mustation = [f"{y[0]}[{x}]{y[2]}" for x, y in zip(S.index, S["Trinucleotide"])]
-    S.index = mustation
-    S.sort_index(inplace=True)
-    S = S.iloc[:, 1:]
+    senario_sig = [
+        (5, 21),
+        (4, 3),
+        (3, 11),
+        (2, 11),
+        (1, 11),
+    ]
 
-    E, P = refit(
-        X, S=S, best={"signatures": 11}, save_to="Experiments/Scenario_1/Models/"
-    )
+    for beta in [0, 0.1, 0.01, 0.001, 1]:
+        for senario, sig in senario_sig:
 
-    # Plot extracted signatures
-    try:
-        tumour_types = [column.split("::")[0] for column in X.index]
-    except:
-        try:
-            tumour_types = [column.split("-")[0] for column in X.index]
-        except:
-            tumour_types = None
+            X = load_dataset(name=f"Scenario_{senario}", cosmic_version="3.4")
+            # Refit
+            S = pd.read_csv(
+                f"/home/gislum/python/muse-xae/DRP10/Ground_truths/scenario_{senario}/ground.truth.syn.sigs.csv",
+                index_col=0,
+            )
+            mustation = [
+                f"{y[0]}[{x}]{y[2]}" for x, y in zip(S.index, S["Trinucleotide"])
+            ]
+            S.index = mustation
+            S.sort_index(inplace=True)
+            S = S.iloc[:, 1:]
 
-    index_signatures = X.columns
-    plot_results(
-        X,
-        S=S,
-        E=E,
-        P=P,
-        sig_index=index_signatures,
-        tumour_types=tumour_types,
-        save_to="Experiments/Scenario_1/",
-        cosmic_version="3.4",
-    )
+            E, P = refit(
+                X,
+                S=S,
+                best={"signatures": sig},
+                save_to=f"Experiments/beta_{beta}/Scenario_{senario}/Models/",
+                beta=beta,
+            )
+
+            # Plot extracted signatures
+            try:
+                tumour_types = [column.split("::")[0] for column in X.index]
+            except:
+                try:
+                    tumour_types = [column.split("-")[0] for column in X.index]
+                except:
+                    tumour_types = None
+
+            index_signatures = X.columns
+            plot_results(
+                X,
+                S=S,
+                E=E,
+                P=P,
+                sig_index=index_signatures,
+                tumour_types=tumour_types,
+                save_to=f"Experiments/beta_{beta}/Scenario_{senario}/",
+                cosmic_version="3.4",
+            )
+
+            # Test
+            test_exp(
+                save_to=f"Experiments/beta_{beta}/Scenario_{senario}/",
+                dataset=f"Scenario_{senario}",
+            )
