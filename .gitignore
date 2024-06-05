@@ -1,3 +1,7 @@
+/Experiments
+/Plots
+/Ground_truths
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
